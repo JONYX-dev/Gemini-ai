@@ -1,0 +1,558 @@
+-- Load Rayfield UI Library
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+
+-- Main Window (Super Black)
+local Window = Rayfield:CreateWindow({
+	Name = "GEMINI (AI DRUMS)",
+	Icon = 0,
+	LoadingTitle = "GEMINI (AI DRUMS)",
+	LoadingSubtitle = "Super Black Edition",
+	Theme = "Dark",
+	DisableRayfieldPrompts = true,
+	DisableBuildWarnings = true,
+	ConfigurationSaving = {
+		Enabled = false,
+		FolderName = "GeminiAIDrumsRayfield",
+		FileName = "Config"
+	},
+	KeySystem = false
+})
+
+-- Apply Super Black styling across Rayfield elements
+local function applySuperBlackTheme()
+	local pureBlack = Color3.fromRGB(0, 0, 0)
+	local nearBlack = Color3.fromRGB(10, 10, 10)
+	local darkCard = Color3.fromRGB(16, 16, 16)
+
+	local roots = { CoreGui }
+	pcall(function()
+		if gethui then
+			table.insert(roots, gethui())
+		end
+	end)
+
+	for _, root in ipairs(roots) do
+		for _, obj in ipairs(root:GetDescendants()) do
+			if obj.Name == "Rayfield" then
+				for _, desc in ipairs(obj:GetDescendants()) do
+					if desc:IsA("UIStroke") then
+						desc.Enabled = false
+						desc.Thickness = 0
+					elseif desc:IsA("Frame") then
+						if desc.Name == "Topbar" then
+							desc.BackgroundColor3 = pureBlack
+						elseif desc.Name == "Main" or desc.Name == "Elements" or desc.Name == "Content" then
+							desc.BackgroundColor3 = pureBlack
+						else
+							desc.BackgroundColor3 = darkCard
+						end
+					elseif desc:IsA("ScrollingFrame") then
+						desc.BackgroundColor3 = pureBlack
+					elseif desc:IsA("TextBox") then
+						desc.BackgroundColor3 = nearBlack
+						desc.TextColor3 = Color3.fromRGB(255, 255, 255)
+						desc.ClearTextOnFocus = false
+					end
+				end
+			end
+		end
+	end
+end
+
+-- ==========================================
+-- MAIN TAB: GEMINI (AI DRUMS)
+-- ==========================================
+local GeminiTab = Window:CreateTab("GEMINI (AI DRUMS)", 0)
+
+GeminiTab:CreateSection("1. API Key & Model Setup")
+
+-- Detect executor HTTP function safely
+local function getExecutorRequest()
+	if type(request) == "function" then return request, "request" end
+	if type(http_request) == "function" then return http_request, "http_request" end
+	if type(http) == "table" and type(http.request) == "function" then return http.request, "http.request" end
+	if type(syn) == "table" and type(syn.request) == "function" then return syn.request, "syn.request" end
+	if type(fluxus) == "table" and type(fluxus.request) == "function" then return fluxus.request, "fluxus.request" end
+	return nil, "None found"
+end
+
+-- Detect executor clipboard function safely
+local function copyToClipboard(text)
+	local clipFn = setclipboard or toclipboard or set_clipboard or (Clipboard and Clipboard.set)
+	if type(clipFn) == "function" then
+		local ok = pcall(clipFn, tostring(text or ""))
+		return ok
+	end
+	return false
+end
+
+local ReqFunc, ReqName = getExecutorRequest()
+
+local EnteredApiKey = ""
+local BaseUrl = "https://generativelanguage.googleapis.com"
+
+local ModelOptions = {
+	"Auto (Find Working Model)",
+	"gemini-3.5-flash-lite",
+	"gemini-3.1-flash-lite",
+	"gemini-3.8-flash",
+	"gemini-3.6-flash",
+	"gemini-4-hydrogen",
+	"gemini-4-neon",
+	"gemini-4-argon"
+}
+
+local FetchedChatModels = {
+	"gemini-3.5-flash-lite",
+	"gemini-3.1-flash-lite",
+	"gemini-3.8-flash",
+	"gemini-3.6-flash",
+	"gemini-4-hydrogen",
+	"gemini-4-neon",
+	"gemini-4-argon"
+}
+
+local SelectedModel = "Auto (Find Working Model)"
+local LockedWorkingModel = "gemini-3.5-flash-lite"
+local LatestPromptText = ""
+local LatestReplyText = ""
+
+local HttpLabel = GeminiTab:CreateLabel("Executor HTTP: " .. ReqName)
+local ApiStatusLabel = GeminiTab:CreateLabel("Status: Paste API key and tap GEMINI OFFICIAL GOOGLE AI.")
+local ActiveModelLabel = GeminiTab:CreateLabel("Model: Auto -> " .. LockedWorkingModel)
+
+-- Non-blocking HTTP wrapper
+local function sendHttpRequest(options)
+	if not ReqFunc then
+		return nil, "Executor has no HTTP function (" .. ReqName .. ")"
+	end
+
+	local ok, res = pcall(function()
+		return ReqFunc(options)
+	end)
+
+	if ok and res then
+		return res
+	end
+	return nil, tostring(res)
+end
+
+-- Read key directly from GUI TextBox if Enter wasn't pressed
+local function findApiKeyFromGui()
+	if EnteredApiKey ~= "" then
+		return EnteredApiKey
+	end
+
+	local roots = { CoreGui }
+	pcall(function()
+		if gethui then
+			table.insert(roots, gethui())
+		end
+	end)
+
+	for _, root in ipairs(roots) do
+		for _, obj in ipairs(root:GetDescendants()) do
+			if obj:IsA("TextBox") then
+				local txt = string.match(obj.Text or "", "^%s*(.-)%s*$")
+				if string.sub(txt, 1, 4) == "AIza" and #txt >= 30 then
+					EnteredApiKey = txt
+					return txt
+				end
+			end
+		end
+	end
+
+	return ""
+end
+
+-- Filter out non-text/image/audio/embedding models
+local function isTextChatModel(modelId)
+	local lower = string.lower(modelId or "")
+	if lower == "" then return false end
+	if string.find(lower, "embedding") or string.find(lower, "tts") or string.find(lower, "image")
+		or string.find(lower, "live") or string.find(lower, "transcribe") or string.find(lower, "translate")
+		or string.find(lower, "veo") or string.find(lower, "imagen") or string.find(lower, "omni") then
+		return false
+	end
+	return string.find(lower, "gemini") ~= nil
+end
+
+-- Order models so reliable/fast ones are tried first
+local function prioritizeModels(modelsList)
+	local priority = {
+		"gemini-3.5-flash-lite",
+		"gemini-3.1-flash-lite",
+		"gemini-4-hydrogen",
+		"gemini-3.8-flash",
+		"gemini-3.6-flash",
+		"gemini-4-neon",
+		"gemini-4-argon"
+	}
+
+	local ordered = {}
+	local added = {}
+
+	for _, p in ipairs(priority) do
+		for _, m in ipairs(modelsList) do
+			if m == p and not added[m] then
+				added[m] = true
+				table.insert(ordered, m)
+			end
+		end
+	end
+
+	for _, m in ipairs(modelsList) do
+		if isTextChatModel(m) and not added[m] then
+			added[m] = true
+			table.insert(ordered, m)
+		end
+	end
+
+	return ordered
+end
+
+-- Send a prompt to a single model
+local function sendToModel(apiKey, modelId, promptText)
+	local endpoint = BaseUrl .. "/v1beta/models/" .. modelId .. ":generateContent?key=" .. apiKey
+	local payload = HttpService:JSONEncode({
+		contents = {
+			{
+				parts = {
+					{ text = promptText }
+				}
+			}
+		}
+	})
+
+	local response, err = sendHttpRequest({
+		Url = endpoint,
+		Method = "POST",
+		Headers = {
+			["Content-Type"] = "application/json"
+		},
+		Body = payload
+	})
+
+	if not response then
+		return false, "Network Error: " .. tostring(err), 0
+	end
+
+	local code = tonumber(response.StatusCode or response.Status) or 0
+	if code ~= 200 then
+		return false, "HTTP " .. tostring(code) .. " on " .. modelId, code
+	end
+
+	local ok, decoded = pcall(function()
+		return HttpService:JSONDecode(response.Body)
+	end)
+
+	if ok and decoded and decoded.candidates and decoded.candidates[1] and decoded.candidates[1].content then
+		local parts = decoded.candidates[1].content.parts
+		local replyText = (parts and parts[1] and parts[1].text) or "Empty response."
+		return true, replyText, 200
+	end
+
+	return false, "Invalid JSON response from " .. modelId, code
+end
+
+-- Find the first model from the candidate list that actually replies with HTTP 200
+local function findWorkingModel(apiKey, candidates, onStep)
+	local lastFailure = "No working model found."
+	for _, modelId in ipairs(candidates) do
+		if onStep then
+			onStep("Testing " .. modelId .. "...")
+		end
+
+		local ok, resultOrErr, code = sendToModel(apiKey, modelId, "Reply with only: OK")
+		if ok then
+			return true, modelId, resultOrErr
+		end
+
+		lastFailure = resultOrErr
+		if code == 404 or code == 503 or code == 429 then
+			task.wait(0.25)
+		else
+			return false, nil, lastFailure
+		end
+	end
+
+	return false, nil, lastFailure
+end
+
+-- Api key Input
+GeminiTab:CreateInput({
+	Name = "Api key",
+	CurrentValue = "",
+	PlaceholderText = "Paste AIza... key here",
+	RemoveTextAfterFocusLost = false,
+	Flag = "GeminiApiKeyInput",
+	Callback = function(Text)
+		EnteredApiKey = string.match(Text or "", "^%s*(.-)%s*$")
+		if EnteredApiKey ~= "" then
+			ApiStatusLabel:Set("Status: Key saved (" .. string.sub(EnteredApiKey, 1, 6) .. "...). Tap GEMINI OFFICIAL GOOGLE AI!")
+		else
+			ApiStatusLabel:Set("Status: Api key is empty.")
+		end
+	end
+})
+
+-- Model Selection Dropdown
+local ModelDropdown = GeminiTab:CreateDropdown({
+	Name = "Select Model",
+	Options = ModelOptions,
+	CurrentOption = { "Auto (Find Working Model)" },
+	MultipleOptions = false,
+	Flag = "GeminiModelDropdown",
+	Callback = function(Options)
+		local chosen = (type(Options) == "table" and Options[1]) or tostring(Options or "Auto (Find Working Model)")
+		SelectedModel = chosen
+		if chosen == "Auto (Find Working Model)" then
+			ActiveModelLabel:Set("Model: Auto -> " .. LockedWorkingModel)
+		else
+			ActiveModelLabel:Set("Model: " .. chosen)
+		end
+	end
+})
+
+-- Official Google AI Check Button
+GeminiTab:CreateButton({
+	Name = "GEMINI OFFICIAL GOOGLE AI",
+	Callback = function()
+		local keyToTest = findApiKeyFromGui()
+		if keyToTest == "" then
+			ApiStatusLabel:Set("Status: Paste an AIza... key first.")
+			Rayfield:Notify({
+				Title = "GEMINI OFFICIAL GOOGLE AI",
+				Content = "Enter your API key in the Api key box first.",
+				Duration = 3
+			})
+			return
+		end
+
+		ApiStatusLabel:Set("Status: Checking official Gemini models...")
+
+		task.spawn(function()
+			local modelsUrl = BaseUrl .. "/v1beta/models?key=" .. keyToTest
+			local response, err = sendHttpRequest({
+				Url = modelsUrl,
+				Method = "GET",
+				Headers = {
+					["Content-Type"] = "application/json"
+				}
+			})
+
+			if not response then
+				ApiStatusLabel:Set("Status: Request failed - " .. tostring(err))
+				return
+			end
+
+			local code = tonumber(response.StatusCode or response.Status) or 0
+			if code ~= 200 then
+				ApiStatusLabel:Set("Status: Invalid key (HTTP " .. tostring(code) .. ")")
+				return
+			end
+
+			local ok, decoded = pcall(function()
+				return HttpService:JSONDecode(response.Body)
+			end)
+
+			local discovered = {}
+			if ok and decoded and decoded.models then
+				for _, item in ipairs(decoded.models) do
+					local supportsGenerate = false
+					if item.supportedGenerationMethods then
+						for _, method in ipairs(item.supportedGenerationMethods) do
+							if method == "generateContent" then
+								supportsGenerate = true
+								break
+							end
+						end
+					end
+
+					if supportsGenerate and item.name then
+						local modelId = string.gsub(item.name, "^models/", "")
+						if isTextChatModel(modelId) then
+							table.insert(discovered, modelId)
+						end
+					end
+				end
+			end
+
+			local candidates = (#discovered > 0) and prioritizeModels(discovered) or prioritizeModels(FetchedChatModels)
+			FetchedChatModels = candidates
+
+			local dropdownList = { "Auto (Find Working Model)" }
+			for _, m in ipairs(candidates) do
+				table.insert(dropdownList, m)
+			end
+
+			pcall(function()
+				ModelDropdown:Refresh(dropdownList)
+				ModelDropdown:Set({ "Auto (Find Working Model)" })
+			end)
+			SelectedModel = "Auto (Find Working Model)"
+
+			local worked, workingId, failReason = findWorkingModel(keyToTest, candidates, function(stepMsg)
+				ApiStatusLabel:Set("Status: " .. stepMsg)
+			end)
+
+			if worked and workingId then
+				LockedWorkingModel = workingId
+				ActiveModelLabel:Set("Model: Auto -> " .. workingId)
+				ApiStatusLabel:Set("Status: OFFICIAL GOOGLE AI READY (" .. workingId .. ")!")
+				applySuperBlackTheme()
+				Rayfield:Notify({
+					Title = "GEMINI OFFICIAL GOOGLE AI",
+					Content = "Connected on " .. workingId .. "! Ready to chat.",
+					Duration = 5
+				})
+			else
+				ApiStatusLabel:Set("Status: Failed - " .. tostring(failReason))
+			end
+		end)
+	end
+})
+
+-- ==========================================
+-- 2. ASK GEMINI, CLEAR & COPY
+-- ==========================================
+GeminiTab:CreateSection("2. Ask GEMINI OFFICIAL GOOGLE AI")
+
+local ResponseParagraph = GeminiTab:CreateParagraph({
+	Title = "Gemini Response",
+	Content = "Type your prompt with your keyboard and press Enter (or tap Send Prompt)."
+})
+
+local function submitPromptToGemini(rawPrompt)
+	local cleanPrompt = string.match(rawPrompt or "", "^%s*(.-)%s*$")
+	if cleanPrompt == "" then return end
+
+	LatestPromptText = cleanPrompt
+
+	local keyToUse = findApiKeyFromGui()
+	if keyToUse == "" then
+		ResponseParagraph:Set({
+			Title = "Gemini Response",
+			Content = "Please paste your Api key above and tap GEMINI OFFICIAL GOOGLE AI first."
+		})
+		return
+	end
+
+	local modelToUse = (SelectedModel == "Auto (Find Working Model)") and LockedWorkingModel or SelectedModel
+	ResponseParagraph:Set({
+		Title = "Gemini Response (" .. modelToUse .. ")",
+		Content = "Thinking..."
+	})
+
+	task.spawn(function()
+		local ok, replyOrErr = sendToModel(keyToUse, modelToUse, cleanPrompt)
+		if ok then
+			LatestReplyText = replyOrErr
+			ResponseParagraph:Set({
+				Title = "Gemini Response (" .. modelToUse .. ")",
+				Content = replyOrErr
+			})
+		else
+			LatestReplyText = replyOrErr
+			ResponseParagraph:Set({
+				Title = "Gemini Response Error",
+				Content = replyOrErr
+			})
+		end
+	end)
+end
+
+local PromptInput = GeminiTab:CreateInput({
+	Name = "Ask Gemini...",
+	CurrentValue = "",
+	PlaceholderText = "Type with your keyboard...",
+	RemoveTextAfterFocusLost = false,
+	Flag = "GeminiPromptInput",
+	Callback = function(PromptText)
+		LatestPromptText = tostring(PromptText or "")
+		if string.match(LatestPromptText, "^%s*(.-)%s*$") ~= "" then
+			submitPromptToGemini(LatestPromptText)
+		end
+	end
+})
+
+-- Helper to locate the Ask Gemini TextBox in Rayfield's GUI
+local function findPromptTextBox()
+	local roots = { CoreGui }
+	pcall(function()
+		if gethui then
+			table.insert(roots, gethui())
+		end
+	end)
+
+	for _, root in ipairs(roots) do
+		for _, obj in ipairs(root:GetDescendants()) do
+			if obj:IsA("TextBox") and string.find(string.lower(obj.PlaceholderText or ""), "keyboard") then
+				return obj
+			end
+		end
+	end
+	return nil
+end
+
+-- Clear button that wipes the Ask Gemini textbox and saved prompt state
+GeminiTab:CreateButton({
+	Name = "Clear",
+	Callback = function()
+		LatestPromptText = ""
+		pcall(function()
+			PromptInput:Set("")
+		end)
+		local box = findPromptTextBox()
+		if box then
+			box.Text = ""
+		end
+		Rayfield:Notify({
+			Title = "GEMINI (AI DRUMS)",
+			Content = "Textbox cleared.",
+			Duration = 2
+		})
+	end
+})
+
+GeminiTab:CreateButton({
+	Name = "Send Prompt",
+	Callback = function()
+		local box = findPromptTextBox()
+		local current = (box and box.Text) or LatestPromptText
+		if string.match(current or "", "^%s*(.-)%s*$") == "" then
+			Rayfield:Notify({
+				Title = "GEMINI (AI DRUMS)",
+				Content = "Type a message in 'Ask Gemini...' first.",
+				Duration = 3
+			})
+			return
+		end
+		submitPromptToGemini(current)
+	end
+})
+
+GeminiTab:CreateButton({
+	Name = "Copy Response",
+	Callback = function()
+		if LatestReplyText == "" then
+			Rayfield:Notify({
+				Title = "GEMINI (AI DRUMS)",
+				Content = "No response to copy yet.",
+				Duration = 2
+			})
+			return
+		end
+		local copied = copyToClipboard(LatestReplyText)
+		Rayfield:Notify({
+			Title = "GEMINI (AI DRUMS)",
+			Content = copied and "Copied to clipboard!" or "Clipboard not supported on this executor.",
+			Duration = 3
+		})
+	end
+})
+
+task.delay(0.35, applySuperBlackTheme)
